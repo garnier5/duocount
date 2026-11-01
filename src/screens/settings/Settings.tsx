@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { eraseAll, replaceAll, setLocal, useDb, DEFAULT_LOCAL } from '../../data/store';
 import { saveHousehold } from '../../domain/actions';
-import { lastSyncAt } from '../../domain/calc';
+import { lastSyncAt, startMonthChoices } from '../../domain/calc';
 import { CURRENCIES } from '../../domain/defaults';
 import { categories, household, liveRecordCount, members, others } from '../../domain/select';
 import type { Theme } from '../../domain/types';
@@ -104,7 +104,32 @@ export function Settings() {
           <div className="card lst in58">
             <SRow icon="people" color="#3E6FD8" title="Members and shares" value={ms.map((m) => m.share + '%').join(' · ')} to="/settings/members" />
             <SRow icon="grid" color="#2E9457" title="Categories" value={String(categories(db).length)} to="/settings/categories" />
+            <label className="row" style={{ position: 'relative' }}>
+              <span className="sico" style={{ background: '#D9622B' }}>
+                <Icon name="calendar" size={18} />
+              </span>
+              <span className="grow">First month</span>
+              <span className="val">{sinceMonth}</span>
+              <Icon name="chevronDown" size={16} className="chev" />
+              <select
+                aria-label="First month"
+                value={hh?.startMonth}
+                onChange={(e) => {
+                  saveHousehold({ startMonth: e.target.value });
+                  // Going back to a missed month: show it straight away.
+                  if (hh && e.target.value < hh.startMonth) setLocal({ selectedMonth: e.target.value });
+                }}
+                style={{ position: 'absolute', inset: 0, opacity: 0, width: '100%', cursor: 'pointer' }}
+              >
+                {startMonthChoices(db).map((m) => (
+                  <option key={m} value={m}>
+                    {monthName(m)}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
+          <p className="cap foot">The first month you track. Pick an earlier one to plan and enter a month you missed.</p>
         </section>
 
         <section>

@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { strFromU8, unzipSync } from 'fflate';
 import { buildWorkbook } from '../src/export/excel';
 import { axisTop, breakdown, chartMonths, monthPoint } from '../src/domain/charts';
 import { DEFAULT_LOCAL, type Db } from '../src/data/store';
-import { canEnterExpenses, forecastView, memberBalances, monthInfo, monthStats } from '../src/domain/calc';
+import { canEnterExpenses, forecastView, startMonthChoices, memberBalances, monthInfo, monthStats } from '../src/domain/calc';
 import { createRec } from '../src/domain/records';
 import type { Category, Expense, Forecast, Household, Member, MonthDoc, Rec, Received } from '../src/domain/types';
 
@@ -213,5 +213,20 @@ describe('charts', () => {
   it('picks a round top for the axis', () => {
     expect(axisTop(275000)).toEqual({ top: 300000, step: 100000 });
     expect(axisTop(95000)).toEqual({ top: 150000, step: 50000 });
+  });
+});
+
+describe('first month', () => {
+  it('can go up to a year back, never after a month that has data', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 1));
+    try {
+      const choices = startMonthChoices(scenario());
+      expect(choices[0]).toBe('2026-10');
+      expect(choices[choices.length - 1]).toBe('2025-11');
+      expect(choices).toHaveLength(12);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -10,6 +10,7 @@ import {
   household,
   members,
   monthDoc,
+  monthsWithData,
   received,
   type CategoryView,
   type ExpenseView,
@@ -36,6 +37,21 @@ export function startMonth(db: Db): MonthKey {
   const first = expenses(db).reduce<MonthKey | null>((min, e) => (!min || e.month < min ? e.month : min), null);
   const s = hh?.startMonth ?? currentMonth();
   return first && first < s ? first : s;
+}
+
+/**
+ * Months the household can start from, latest first: up to a year back, and never after
+ * the current month or a month that already has a plan, expenses or a close.
+ */
+export function startMonthChoices(db: Db): MonthKey[] {
+  const used = [...monthsWithData(db), ...closedMonths(db)].sort()[0];
+  const cur = currentMonth();
+  const latest = used && used < cur ? used : cur;
+  const out: MonthKey[] = [];
+  for (let m = latest; m >= addMonths(cur, -12); m = addMonths(m, -1)) out.push(m);
+  const own = household(db)?.startMonth;
+  if (own && !out.includes(own)) out.push(own);
+  return out.sort().reverse();
 }
 
 /** Latest month the household can look at: this month, or the one after the last closed month. */

@@ -72,7 +72,10 @@ describe('resolve', () => {
     const theirs = editRec(base, exp(6600), 'julien');
     const d = diffRecords(map(mine), [theirs]);
     const [merged] = resolve(d, { [mine.key]: 'mine' }, 'camille');
-    expect(merged.data).toEqual(exp(6240));
+    const data = merged.data as Expense;
+    expect(data.amount).toBe(6240);
+    // Julien's version isn't lost: it goes into the history.
+    expect(data.history?.map((h) => [h.amount, h.by])).toEqual([[6600, 'julien']]);
     // On Julien's phone, our merged version now descends from his.
     const back = diffRecords(map(theirs), [merged]);
     expect(back.conflicts).toHaveLength(0);
@@ -85,7 +88,9 @@ describe('resolve', () => {
     const theirs = editRec(base, exp(6600), 'julien');
     const d = diffRecords(map(mine), [theirs]);
     const [merged] = resolve(d, { [mine.key]: 'theirs' }, 'camille');
-    expect(merged.data).toEqual(exp(6600));
+    const data = merged.data as Expense;
+    expect(data.amount).toBe(6600);
+    expect(data.history?.map((h) => [h.amount, h.by])).toEqual([[6240, 'camille']]);
     const back = diffRecords(map(theirs), [merged]);
     expect(back.conflicts).toHaveLength(0);
     expect(back.changes).toHaveLength(0);

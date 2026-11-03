@@ -43,7 +43,7 @@ export function DeleteCategorySheet({ id }: { id: string }) {
 
   let summary = list.length ? plural(thisMonth.length, 'expense') + ' · ' + money(thisMonth.reduce((a, e) => a + e.amount, 0)) + ' this month' : 'No expenses';
   if (list.length > thisMonth.length) summary += ', ' + plural(list.length - thisMonth.length, 'other') + ' in earlier months';
-  if (planned) summary += ', and ' + money(planned, { compact: true }) + ' planned in the ' + monthShort(planMonth) + ' forecast';
+  if (planned) summary += ', and ' + money(planned) + ' planned in the ' + monthShort(planMonth) + ' forecast';
 
   return (
     <Sheet onClose={close} labelledBy="dcT">

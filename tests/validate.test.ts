@@ -35,6 +35,15 @@ describe('decrypted content', () => {
     expect(readSyncPayload({ records: recs }, 'hh').records).toHaveLength(recs.length);
   });
 
+  it('checks the histories like the rest of the data', () => {
+    const v = { at: 1, by: 'cam', month: '2026-10', label: 'Supermarket', amount: 3500, categoryId: 'groceries', payer: 'jul', advance: true };
+    const ok = withData(household(), 'expense:e1', { history: [v] });
+    expect(readSyncPayload({ records: ok }, 'hh').records).toHaveLength(ok.length);
+    expect(() => readSyncPayload({ records: withData(household(), 'expense:e1', { history: [{ ...v, amount: 0.5 }] }) }, 'hh')).toThrow(InvalidData);
+    expect(() => readSyncPayload({ records: withData(household(), 'received:2026-10:cam', { history: [{ at: 1, by: 'cam', amount: 'lots' }] }) }, 'hh')).toThrow(InvalidData);
+    expect(() => readSyncPayload({ records: withData(household(), 'forecast:2026-10', { history: [{ at: 1, by: 'cam', total: 1, lines: {}, extras: [], shares: { cam: { pct: 300 } } }] }) }, 'hh')).toThrow(InvalidData);
+  });
+
   it('still accepts expenses from earlier versions, which had a day', () => {
     const recs = withData(household(), 'expense:e1', { date: '2026-10-03' });
     expect(readSyncPayload({ records: recs }, 'hh').records).toHaveLength(recs.length);

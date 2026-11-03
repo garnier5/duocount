@@ -20,6 +20,7 @@ import { ManageCategories } from './screens/settings/ManageCategories';
 import { Members } from './screens/settings/Members';
 import { PassphraseSettings } from './screens/settings/PassphraseSettings';
 import { Settings } from './screens/settings/Settings';
+import { Statement } from './screens/Statement';
 import { Import } from './screens/sync/Import';
 import { Sync } from './screens/sync/Sync';
 import { planFirstStep } from './screens/PlanFirst';
@@ -83,6 +84,8 @@ function Screen({ route, ready }: { route: string; ready: boolean }) {
       return <MonthEntry />;
     case '/month/review':
       return <MonthReview />;
+    case '/statement':
+      return <Statement />;
     default:
       return <Overview />;
   }

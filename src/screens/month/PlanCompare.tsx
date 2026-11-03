@@ -13,7 +13,7 @@ export function compare(entered: Cents, plan: Cents) {
   } else if (entered > plan) {
     delta = '▲ ' + money(entered - plan) + ' over plan';
     color = 'var(--overInk)';
-  } else if (entered > 0 && plan - entered < 50) {
+  } else if (entered > 0 && entered === plan) {
     delta = '= on plan';
   } else if (entered > 0) {
     delta = '▼ ' + money(plan - entered) + ' under plan';
@@ -25,7 +25,7 @@ export function compare(entered: Cents, plan: Cents) {
 export function PlanPill({ plan, small, suffix }: { plan: Cents; small?: boolean; suffix?: boolean }) {
   return (
     <span className={'planpill num' + (small ? ' s' : '')}>
-      {plan === 0 ? 'Nothing planned' : suffix ? money(plan, { whole: true }) + ' planned' : 'Planned ' + money(plan, { whole: true })}
+      {plan === 0 ? 'Nothing planned' : suffix ? money(plan) + ' planned' : 'Planned ' + money(plan)}
     </span>
   );
 }

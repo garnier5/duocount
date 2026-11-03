@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDb, type Db } from '../data/store';
 import { deleteExpense } from '../domain/actions';
-import { canEnterExpenses, isBetweenMembers, isClosed } from '../domain/calc';
+import { canEnterExpenses, isBetweenMembers, isClosed, monthStats } from '../domain/calc';
 import { PlanFirst } from './PlanFirst';
+import { DoubleCountNote, splitSummary } from './SplitLines';
 import { NEUTRAL } from '../domain/defaults';
 import { category, expensesOf, member, members, type ExpenseView } from '../domain/select';
 import { dateKey, monthShort, plural, shortDay } from '../lib/dates';
@@ -19,7 +20,26 @@ export function expenseCaption(db: Db, e: ExpenseView): string {
   const who = e.payer === 'joint' ? 'Joint account' : member(db, e.payer)?.name ?? 'Former member';
   let payer = who;
   if (e.payer !== 'joint') payer = e.advance ? who + ', reimbursed by the account' : 'paid by ' + who + ' for ' + otherName(db, e.payer);
-  return cat + ' · ' + payer + (e.recurring ? ' · recurring' : '');
+  const n = e.history?.length ?? 0;
+  return cat + ' · ' + payer + (e.recurring ? ' · recurring' : '') + (n ? ' · changed ' + (n === 1 ? 'once' : n + ' times') : '');
+}
+
+/** Category totals and expenses entered one by one, always shown apart, each with its own sum. */
+function groupsOf(list: ExpenseView[]) {
+  const sum = (xs: ExpenseView[]) => xs.filter((e) => !isBetweenMembers(e)).reduce((a, e) => a + e.amount, 0);
+  const totals = list.filter((e) => e.kind === 'total');
+  const singles = list.filter((e) => e.kind !== 'total');
+  const out = [];
+  if (totals.length) out.push({ title: 'Totals by category', sum: sum(totals), items: totals, caption: 'One total per category, typed from the joint account statement.' });
+  if (singles.length) {
+    const own = singles.filter((e) => e.payer !== 'joint');
+    const caption =
+      'Entered one by one' +
+      (own.length ? ': ' + money(sum(singles.filter((e) => e.payer === 'joint'))) + ' from the joint account, ' + money(sum(own)) + ' paid by members.' : ', from the joint account.') +
+      (own.some(isBetweenMembers) ? ' Paid for the other member is not household spending and is left out of the sum.' : '');
+    out.push({ title: 'One by one', sum: sum(singles), items: singles, caption });
+  }
+  return out;
 }
 
 export function otherName(db: Db, memberId: string): string {
@@ -41,7 +61,8 @@ export function Expenses() {
   const all = expensesOf(db, month);
   const list = filter === 'adv' ? all.filter((e) => e.payer !== 'joint') : all;
   const closed = isClosed(db, month);
-  const total = all.filter((e) => !isBetweenMembers(e)).reduce((a, e) => a + e.amount, 0);
+  const stats = monthStats(db, month);
+  const total = stats.total;
 
   useEffect(() => setOpen(null), [month, filter]);
 
@@ -100,6 +121,9 @@ export function Expenses() {
                 {plural(all.length, 'expense')} · {closedAt ? 'closed ' + shortDay(dateKey(new Date(closedAt))) : filter === 'adv' ? 'paid by a member' : 'latest first'}
               </span>
             </div>
+            <div className="cap num" style={{ margin: '-6px 4px 0' }}>
+              {splitSummary(stats)}
+            </div>
             <Seg
               small
               label="Filter"
@@ -119,21 +143,29 @@ export function Expenses() {
                 Nothing paid with a member's own money this month.
               </p>
             )}
-            {list.length > 0 && (
-              <div className="card lst">
-                {list.map((e) => (
-                  <SwipeRow
-                    key={e.id}
-                    db={db}
-                    e={e}
-                    open={open === e.id}
-                    onOpen={(v) => setOpen(v ? e.id : null)}
-                    onEdit={() => edit(e)}
-                    onDelete={() => setConfirm(e)}
-                  />
-                ))}
-              </div>
-            )}
+            <DoubleCountNote db={db} stats={stats} />
+            {groupsOf(list).map((g) => (
+              <section key={g.title} aria-label={g.title}>
+                <h2 className="sh">
+                  <span>{g.title}</span>
+                  <span className="plain num">{money(g.sum)}</span>
+                </h2>
+                <div className="card lst">
+                  {g.items.map((e) => (
+                    <SwipeRow
+                      key={e.id}
+                      db={db}
+                      e={e}
+                      open={open === e.id}
+                      onOpen={(v) => setOpen(v ? e.id : null)}
+                      onEdit={() => edit(e)}
+                      onDelete={() => setConfirm(e)}
+                    />
+                  ))}
+                </div>
+                <p className="cap foot">{g.caption}</p>
+              </section>
+            ))}
             {closed && (
               <p className="cap" style={{ margin: '0 4px' }}>
                 {monthShort(month)} is closed. You can still correct an expense: the change goes to the household at the next sync.

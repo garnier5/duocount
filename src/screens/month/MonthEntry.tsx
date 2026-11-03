@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDb } from '../../data/store';
 import { addExpense, deleteExpense, setCategoryTotal } from '../../domain/actions';
-import { budgetOf, canEnterExpenses, isBetweenMembers, monthStats, plannedFor } from '../../domain/calc';
+import { budgetOf, canEnterExpenses, monthStats, plannedFor } from '../../domain/calc';
 import { NEUTRAL } from '../../domain/defaults';
 import { categories, category, expensesOf, members } from '../../domain/select';
 import { monthShort, plural, type MonthKey } from '../../lib/dates';
@@ -12,6 +12,7 @@ import { toast } from '../../ui/overlays';
 import { useMonth } from '../../ui/useMonth';
 import { expenseCaption, reimburseCaption } from '../Expenses';
 import { PlanFirst } from '../PlanFirst';
+import { DoubleCountNote, splitSummary } from '../SplitLines';
 import { compare, PlanBar, PlanBox, PlanPill } from './PlanCompare';
 
 export function MonthEntry() {
@@ -19,7 +20,8 @@ export function MonthEntry() {
   const { month } = useMonth(db);
   const [mode, setMode] = useState<'list' | 'cat'>('cat');
   const list = expensesOf(db, month);
-  const total = list.filter((e) => !isBetweenMembers(e)).reduce((a, e) => a + e.amount, 0);
+  const stats = monthStats(db, month);
+  const total = stats.total;
   const budget = budgetOf(db, month);
   const pct = budget ? Math.min(100, (total / budget) * 100) : 0;
   const catCount = new Set(list.map((e) => e.categoryId)).size;
@@ -72,8 +74,13 @@ export function MonthEntry() {
               <div style={{ background: 'var(--tint)', width: pct + '%' }} />
             </div>
           )}
-          <div className="cap">{budget != null ? 'of the ' + money(budget, { compact: true }) + ' budget · saved as you go' : 'Saved as you go'}</div>
+          <div className="cap">{budget != null ? 'of the ' + money(budget) + ' budget · saved as you go' : 'Saved as you go'}</div>
+          <div className="cap num" style={{ marginTop: 4 }}>
+            {splitSummary(stats)}
+            {stats.singlesAdvance ? ' (of which ' + money(stats.singlesAdvance) + ' paid by members)' : ''}
+          </div>
         </section>
+        <DoubleCountNote db={db} stats={stats} />
 
         <Seg
           label="Entry mode"
@@ -319,13 +326,16 @@ function Totals({ month, onAdvance }: { month: MonthKey; onAdvance: () => void }
       <section className="card lst" aria-label="Totals by category">
         {cats.map((c) => {
           const totalRow = list.find((e) => e.kind === 'total' && e.categoryId === c.id);
-          const singles = list.filter((e) => e.kind !== 'total' && e.categoryId === c.id);
-          const singlesSum = singles.reduce((a, e) => a + e.amount, 0);
+          const st = byCat.get(c.id);
           const planned = plannedFor(db, month, c.id) ?? c.planned ?? 0;
-          const entered = byCat.get(c.id)?.spent ?? 0;
+          const entered = st?.spent ?? 0;
           const cmp = compare(entered, planned);
           let sub = c.recurringDay ? (totalRow ? 'Recurring · prefilled' : 'Recurring') : '';
-          if (singles.length) sub = '+ ' + money(singlesSum) + ' entered one by one';
+          const extra: string[] = [];
+          if (st?.singlesJoint) extra.push(money(st.singlesJoint) + ' one by one from the joint account');
+          if (st?.singlesAdvance) extra.push(money(st.singlesAdvance) + ' paid by members');
+          if (extra.length) sub = '+ ' + extra.join(' + ') + ' = ' + money(entered);
+          const twice = !!totalRow && !!st?.singlesJoint;
           return (
             <div key={c.id} className="trow2">
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -342,7 +352,7 @@ function Totals({ month, onAdvance }: { month: MonthKey; onAdvance: () => void }
                 <>
                   <PlanBar entered={entered} plan={planned} style={{ margin: '10px 0 4px 46px' }} />
                   <div className="num" style={{ marginLeft: 46, display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 13 }}>
-                    <span style={{ color: 'var(--sec)' }}>{sub}</span>
+                    <span style={{ color: twice ? 'var(--warn)' : 'var(--sec)' }}>{sub}</span>
                     <span style={{ color: cmp.color, fontWeight: 600 }}>{cmp.delta}</span>
                   </div>
                 </>

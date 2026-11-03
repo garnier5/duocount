@@ -4,6 +4,7 @@ import { deleteExpense } from '../domain/actions';
 import {
   budgetOf,
   canEnterExpenses,
+  carryCheck,
   canPlan,
   currentMonth,
   forecastView,
@@ -11,17 +12,21 @@ import {
   memberBalances,
   monthStats,
   plannedFor,
+  type CatStat,
   type ForecastView,
   type MonthStats
 } from '../domain/calc';
-import { categories, category, expensesOf, household, others, received, type CategoryView, type ExpenseView } from '../domain/select';
-import { addMonths, dateKey, monthAbbr, daysInMonth, lastDayOf, monthShort, plural, shortDay, type MonthKey } from '../lib/dates';
-import { money } from '../lib/money';
+import { closings } from '../domain/history';
+import { categories, category, expensesOf, household, monthDoc, others, received, type CategoryView, type ExpenseView } from '../domain/select';
+import { addMonths, dateKey, daysInMonth, lastDayOf, monthShort, plural, shortDay, type MonthKey } from '../lib/dates';
+import { money, percent } from '../lib/money';
 import { navigate } from '../lib/router';
 import { Icon } from '../ui/icons';
 import { ActionSheet, Avatar, MonthBar, Seg, Tile } from '../ui/kit';
 import { openOverlay, toast } from '../ui/overlays';
 import { useMonth } from '../ui/useMonth';
+import { BalanceLines } from './BalanceLines';
+import { DoubleCountNote, SplitLines } from './SplitLines';
 import { SwipeRow } from './Expenses';
 import { PlanFirst } from './PlanFirst';
 import { TransfersCard } from './Transfers';
@@ -99,6 +104,13 @@ export function Overview() {
         {showBalances && <Balances db={db} month={month} closed={closed} />}
 
         {closed && <NextPlanCard db={db} month={month} />}
+
+        {(entered || view.confirmedAt) && (
+          <a className="card r16 lnk" href="#/statement" style={{ padding: '4px 16px', justifyContent: 'space-between' }}>
+            Every figure of {monthShort(month)}: the statement
+            <Icon name="chevron" size={18} />
+          </a>
+        )}
 
         <p className="cap" style={{ margin: '0 8px', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
           <Icon name="shieldCheck" size={16} style={{ marginTop: 1 }} />
@@ -194,7 +206,7 @@ function PlanSection({ db, view, plannable }: { db: Db; view: ForecastView; plan
     ? 'Confirmed on ' + shortDay(dateKey(new Date(view.confirmedAt!)))
     : view.total === 0
       ? 'Nothing planned yet'
-      : (diff != null && diff !== 0 ? money(diff, { compact: true, sign: true }) + ' vs ' + monthShort(prev) + ' · ' : '') +
+      : (diff != null && diff !== 0 ? money(diff, { sign: true }) + ' vs ' + monthShort(prev) + ' · ' : '') +
         (view.exists ? 'draft, not confirmed yet' : 'pre-filled from ' + (view.prevTotal != null ? monthShort(prev) + ' and ' : '') + 'recurring');
 
   return (
@@ -226,7 +238,7 @@ function PlanSection({ db, view, plannable }: { db: Db; view: ForecastView; plan
                 </span>
               </span>
               <span className="num" style={{ fontWeight: 600 }}>
-                {money(r.amount, { compact: true })}
+                {money(r.amount)}
               </span>
             </div>
           ))}
@@ -289,7 +301,7 @@ function DraftTransfers({ view }: { view: ForecastView }) {
             <div key={s.member.id} style={{ borderTop: i ? '0.5px solid var(--sep)' : undefined }}>
               <div className="cl">
                 <span className="l">
-                  {s.member.name}: {money(view.total, { compact: true })} × {s.pct}%
+                  {s.member.name}: {money(view.total)} × {s.pct}%
                 </span>
                 <span className="num">{money(s.gross)}</span>
               </div>
@@ -342,6 +354,12 @@ function PlanVsSpent({ db, month, stats, budget, closed, plannable }: { db: Db; 
         </div>
       )}
       <SpentCard month={month} stats={stats} budget={budget} closed={closed} confirmedAt={view.confirmedAt} plannable={plannable} reopened={reopened} />
+      <div className="card r16" style={{ padding: '10px 18px 12px', marginTop: 12 }} aria-label="How the spending was entered">
+        <SplitLines s={stats} total={stats.total} small />
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <DoubleCountNote db={db} stats={stats} />
+      </div>
       <ByCategory db={db} month={month} stats={stats} budget={budget} />
     </section>
   );
@@ -382,7 +400,7 @@ function SpentCard({
       </div>
     );
   }
-  const pct = budget > 0 ? Math.round((stats.total / budget) * 100) : 0;
+  const pct = budget > 0 ? (stats.total / budget) * 100 : 0;
   const left = budget - stats.total;
   const over = left < 0;
   const remainingDays = daysInMonth(month) - new Date().getDate();
@@ -397,13 +415,13 @@ function SpentCard({
           className="num"
           style={{ fontSize: 15, fontWeight: 600, color: over ? 'var(--bad)' : 'var(--tintText)', background: over ? 'var(--badSoft)' : 'var(--tintSoft)', padding: '3px 9px', borderRadius: 10 }}
         >
-          {pct}%
+          {percent(stats.total, budget)}
         </span>
       </div>
       <div className="cap" style={{ fontSize: 15 }}>
         spent of {money(budget)} planned{confirmedAt ? ' · plan confirmed ' + shortDay(dateKey(new Date(confirmedAt))) : ''}
       </div>
-      <div className="meter" style={{ margin: '14px 0 10px' }} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, pct)} aria-label={pct + '% of the plan used'}>
+      <div className="meter" style={{ margin: '14px 0 10px' }} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, pct)} aria-label={percent(stats.total, budget) + ' of the plan used'}>
         <div style={{ width: Math.min(100, pct) + '%', background: over ? 'var(--bad)' : 'var(--tint)' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
@@ -411,10 +429,25 @@ function SpentCard({
           <strong className="num" style={{ color: over ? 'var(--bad)' : undefined }}>
             {money(Math.abs(left))}
           </strong>{' '}
-          {over ? 'over plan' : 'under plan'}
+          {over ? 'over plan' : left === 0 ? 'exactly on plan' : 'under plan'}
         </span>
         <span className="cap">{right}</span>
       </div>
+    </div>
+  );
+}
+
+/** "Total €300.00 + one by one €45.20 (€12.00 paid by members)", when a category mixes both. */
+function CatSplit({ s }: { s: CatStat | undefined }) {
+  if (!s) return null;
+  const one = s.singlesJoint + s.singlesAdvance;
+  if (!s.totals || !one) return null;
+  return (
+    <div className="ln num">
+      <span style={s.singlesJoint ? { color: 'var(--warn)' } : undefined}>
+        Total {money(s.totals)} + one by one {money(one)}
+        {s.singlesAdvance ? ' (' + money(s.singlesAdvance) + ' paid by members)' : ''}
+      </span>
     </div>
   );
 }
@@ -432,12 +465,12 @@ function ByCategory({ db, month, stats, budget }: { db: Db; month: MonthKey; sta
   return (
     <div className="card r16 lst" style={{ marginTop: 12, ['--inset' as string]: '62px' }}>
       {shown.map(({ c, spent, planned }) => {
-        const pct = planned ? Math.round((spent / planned) * 100) : null;
-        let note = budget == null ? plural(stats.byCat.get(c.id)?.count ?? 0, 'expense') : pct == null ? 'Not planned' : pct + '%';
+        const pct = planned ? (spent / planned) * 100 : null;
+        let note = budget == null ? plural(stats.byCat.get(c.id)?.count ?? 0, 'expense') : pct == null ? 'Not planned' : percent(spent, planned);
         let tone: string | undefined;
-        if (pct != null && pct >= 100 && c.recurringDay && spent <= planned * 1.02) note = '100% · paid';
+        if (pct != null && c.recurringDay && spent === planned) note = '100% · paid';
         else if (pct != null && pct > 100) {
-          note = pct + '% · over plan';
+          note = percent(spent, planned) + ' · over plan by ' + money(spent - planned);
           tone = 'var(--bad)';
         }
         return (
@@ -457,8 +490,9 @@ function ByCategory({ db, month, stats, budget }: { db: Db; month: MonthKey; sta
               )}
               <div className="ln">
                 <span style={tone ? { color: tone, fontWeight: 500 } : undefined}>{note}</span>
-                <span className="num">{planned ? 'planned ' + money(planned, { compact: true }) : ''}</span>
+                <span className="num">{planned ? 'planned ' + money(planned) : ''}</span>
               </div>
+              <CatSplit s={stats.byCat.get(c.id)} />
             </div>
           </div>
         );
@@ -618,18 +652,22 @@ function ExpensesSection({ db, month, stats, closed }: { db: Db; month: MonthKey
 
 function Balances({ db, month, closed }: { db: Db; month: MonthKey; closed: boolean }) {
   const list = memberBalances(db, month);
+  const spent = monthStats(db, month).total;
+  const sumPct = list.reduce((a, b) => a + b.pct, 0);
   const next = monthShort(addMonths(month, 1));
+  const closing = closed ? closings(monthDoc(db, month)).at(-1) : undefined;
   return (
     <section id="balances" className="msec" aria-labelledby="balT">
       <h2 className="sh lg" id="balT">
-        {closed ? 'Balances' : 'Balances so far'} <span className="shc">transfers + paid − share</span>
+        {closed ? 'Balances' : 'Balances so far'} <a href="#/statement">Full statement</a>
       </h2>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {list.map((b) => {
           const tone = b.balance > 0 ? 'var(--good)' : b.balance < 0 ? 'var(--warn)' : 'var(--label)';
           const label = b.balance > 0 ? 'Credit' : b.balance < 0 ? 'Owes' : 'All settled';
+          const then = closing?.balances[b.member.id];
           return (
-            <div key={b.member.id} className="card r16" style={{ padding: 14 }}>
+            <div key={b.member.id} className="card r16 visible" style={{ padding: 14 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Avatar name={b.member.name} color={b.member.color} size={30} />
                 <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.member.name}</span>
@@ -640,27 +678,13 @@ function Balances({ db, month, closed }: { db: Db; month: MonthKey; closed: bool
               <div className="num" style={{ fontSize: 24, fontWeight: 700, color: tone }}>
                 {money(b.balance, { sign: true })}
               </div>
-              <div style={{ borderTop: '0.5px solid var(--sep)', margin: '10px 0 8px' }} />
-              <div className="ln">
-                <span>Transferred for {monthAbbr(month)}</span>
-                <span className="num">{money(b.transferred, { compact: true })}</span>
-              </div>
-              {b.advances > 0 && (
-                <div className="ln" style={{ marginTop: 3 }}>
-                  <span>Paid for home</span>
-                  <span className="num">{money(b.advances, { compact: true })}</span>
-                </div>
+              <div style={{ borderTop: '0.5px solid var(--sep)', margin: '10px 0 5px' }} />
+              <BalanceLines b={b} month={month} spent={spent} sumPct={sumPct} count={b.advanceCount} small db={db} memberId={b.member.id} />
+              {then && then.balance !== b.balance && (
+                <span className="cap" style={{ display: 'block', marginTop: 6, color: 'var(--warn)' }}>
+                  At closing on {shortDay(dateKey(new Date(closing.at)))}: {money(then.balance, { sign: true })}. Changed by {money(b.balance - then.balance, { sign: true })} since.
+                </span>
               )}
-              {b.between !== 0 && (
-                <div className="ln" style={{ marginTop: 3 }}>
-                  <span>{b.between > 0 ? 'Paid for other' : 'Owed to other'}</span>
-                  <span className="num">{money(Math.abs(b.between), { compact: true })}</span>
-                </div>
-              )}
-              <div className="ln" style={{ marginTop: 3 }}>
-                <span>Share ({b.pct}%)</span>
-                <span className="num">{money(b.due, { compact: true })}</span>
-              </div>
             </div>
           );
         })}
@@ -680,6 +704,7 @@ function NextPlanCard({ db, month }: { db: Db; month: MonthKey }) {
   const f = forecastView(db, next);
   const name = monthShort(next);
   const confirmed = !!f.confirmedAt;
+  const changed = carryCheck(db, next).some((c) => c.diff !== 0);
   return (
     <button
       className="card r16"
@@ -704,7 +729,9 @@ function NextPlanCard({ db, month }: { db: Db; month: MonthKey }) {
       </span>
       <span style={{ flex: 1, minWidth: 0 }}>
         <span style={{ display: 'block', fontWeight: 600 }}>{confirmed ? name + "'s plan is confirmed" : name + "'s plan is ready to confirm"}</span>
-        <span className="cap">{money(f.total, { compact: true })} · balances from {monthShort(month)} included</span>
+        <span className="cap" style={changed ? { color: 'var(--warn)' } : undefined}>
+          {money(f.total)} · {changed ? monthShort(month) + ' changed after it was confirmed: open it to recalculate' : 'balances from ' + monthShort(month) + ' included'}
+        </span>
       </span>
       <Icon name="chevron" size={18} style={{ color: 'var(--ter)' }} />
     </button>

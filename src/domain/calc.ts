@@ -1,6 +1,6 @@
 import type { Db } from '../data/store';
 import { addMonths, dateKey, lastDayOf, monthKey, monthShort, ordinal, plural, shortDay, type DateKey, type MonthKey } from '../lib/dates';
-import { money, splitByShares, type Cents } from '../lib/money';
+import { money, percent, splitByShares, type Cents } from '../lib/money';
 import {
   categories,
   closedMonths,
@@ -119,13 +119,27 @@ export function isBetweenMembers(e: { payer: string; advance: boolean }): boolea
   return e.payer !== 'joint' && !e.advance;
 }
 
-export interface CatStat {
+/**
+ * Household spending of a month or a category, split by how it was entered:
+ * one total per category (from the joint account statement), or one by one
+ * (from the joint account, or paid by a member and reimbursed).
+ */
+export interface SpendSplit {
+  /** "Totals by category": typed at month end, always from the joint account. */
+  totals: Cents;
+  /** One by one, paid from the joint account. */
+  singlesJoint: Cents;
+  /** One by one, paid by a member and reimbursed by the joint account. */
+  singlesAdvance: Cents;
+}
+
+export interface CatStat extends SpendSplit {
   spent: Cents;
   count: number;
   last: string;
 }
 
-export interface MonthStats {
+export interface MonthStats extends SpendSplit {
   /** Household spending: joint account + expenses the account reimburses. */
   total: Cents;
   count: number;
@@ -137,6 +151,12 @@ export interface MonthStats {
   between: ExpenseView[];
 }
 
+/** Where an expense counts in the split. Category totals are always from the joint account. */
+function splitPart(e: { kind: string; payer: string }): keyof SpendSplit {
+  if (e.kind === 'total') return 'totals';
+  return e.payer === 'joint' ? 'singlesJoint' : 'singlesAdvance';
+}
+
 export function monthStats(db: Db, m: MonthKey): MonthStats {
   const list = expensesOf(db, m);
   const byCat = new Map<string, CatStat>();
@@ -144,6 +164,7 @@ export function monthStats(db: Db, m: MonthKey): MonthStats {
   let count = 0;
   const advances: ExpenseView[] = [];
   const between: ExpenseView[] = [];
+  const split: SpendSplit = { totals: 0, singlesJoint: 0, singlesAdvance: 0 };
   for (const e of list) {
     if (isBetweenMembers(e)) {
       between.push(e);
@@ -151,13 +172,16 @@ export function monthStats(db: Db, m: MonthKey): MonthStats {
     }
     total += e.amount;
     count += 1;
-    const s = byCat.get(e.categoryId) ?? { spent: 0, count: 0, last: e.label };
+    const s = byCat.get(e.categoryId) ?? { spent: 0, count: 0, last: e.label, totals: 0, singlesJoint: 0, singlesAdvance: 0 };
     s.spent += e.amount;
     s.count += 1;
+    const part: keyof SpendSplit = splitPart(e);
+    s[part] += e.amount;
+    split[part] += e.amount;
     byCat.set(e.categoryId, s);
     if (e.advance && e.payer !== 'joint') advances.push(e);
   }
-  return { total, count, byCat, advances, advanceTotal: advances.reduce((a, e) => a + e.amount, 0), between };
+  return { total, count, byCat, advances, advanceTotal: advances.reduce((a, e) => a + e.amount, 0), between, ...split };
 }
 
 // ---------- Forecast ----------
@@ -205,7 +229,7 @@ export function prefillLine(db: Db, m: MonthKey, cat: CategoryView): Prefill {
   }
   if (cat.planned != null) return { amount: cat.planned, caption: cat.planned ? 'Planned every month' : 'Nothing planned' };
   const spent = monthStats(db, prevM).byCat.get(cat.id)?.spent ?? 0;
-  if (spent > 0) return { amount: Math.ceil(spent / 1000) * 1000, caption: 'From ' + monthShort(prevM) + ' spending' };
+  if (spent > 0) return { amount: spent, caption: 'From ' + monthShort(prevM) + ' spending' };
   return { amount: 0, caption: 'Nothing planned' };
 }
 
@@ -287,7 +311,7 @@ export function forecastView(db: Db, m: MonthKey): ForecastView {
     // Nothing to compare with (first month, new category): it's simply planned.
     if (pre.amount === 0) return { cat, amount, caption: 'Planned this month', tone: 'sec' as Tone };
     const diff = amount - pre.amount;
-    return { cat, amount, caption: 'Adjusted · ' + money(diff, { compact: true, sign: true }), tone: (diff > 0 ? 'warn' : 'good') as Tone };
+    return { cat, amount, caption: 'Adjusted · ' + money(diff, { sign: true }), tone: (diff > 0 ? 'warn' : 'good') as Tone };
   });
   const extras = data?.extras ?? [];
   const total = lines.reduce((a, l) => a + l.amount, 0) + extras.reduce((a, x) => a + x.amount, 0);
@@ -394,6 +418,28 @@ export function memberBalances(db: Db, m: MonthKey): MemberBalance[] {
   return last;
 }
 
+export interface CarryCheck {
+  member: MemberView;
+  /** Balance from the month before used when the plan was (last) confirmed. */
+  atConfirm: Cents;
+  /** The same balance worked out now, after any later correction. */
+  now: Cents;
+  diff: Cents;
+}
+
+/**
+ * For a confirmed plan: each member's balance from the month before, as used for the transfers
+ * and as it is now. A difference isn't lost: it is carried into the following month.
+ */
+export function carryCheck(db: Db, m: MonthKey): CarryCheck[] {
+  const f = forecastRec(db, m)?.data;
+  if (!f?.confirmedAt || !f.shares) return [];
+  return memberBalances(db, addMonths(m, -1)).map((b) => {
+    const atConfirm = f.shares?.[b.member.id]?.carry ?? 0;
+    return { member: b.member, atConfirm, now: b.balance, diff: b.balance - atConfirm };
+  });
+}
+
 // ---------- Month-end review ----------
 
 export interface AlsoChecked {
@@ -425,8 +471,7 @@ export function alsoChecked(db: Db, m: MonthKey): AlsoChecked[] {
     const planned = plannedFor(db, m, cat.id);
     const spent = stats.byCat.get(cat.id)?.spent ?? 0;
     if (!planned || cat.recurringDay) continue;
-    const pct = Math.round((spent / planned) * 100);
-    if (pct > 100) out.push({ text: cat.name + ' over budget (' + pct + '%)', value: money(spent), tone: 'bad' });
+    if (spent > planned) out.push({ text: cat.name + ' over budget (' + percent(spent, planned) + ', ' + money(spent - planned, { sign: true }) + ')', value: money(spent), tone: 'bad' });
   }
   return out;
 }

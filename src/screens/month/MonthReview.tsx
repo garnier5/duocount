@@ -3,13 +3,14 @@ import { closeMonth, setReceived } from '../../domain/actions';
 import { alsoChecked, budgetOf, expectedTransfer, isClosed, memberBalances, monthStats } from '../../domain/calc';
 import { members, received } from '../../domain/select';
 import { addMonths, monthShort, plural } from '../../lib/dates';
-import { money } from '../../lib/money';
+import { money, percent } from '../../lib/money';
 import { navigate } from '../../lib/router';
 import { Icon } from '../../ui/icons';
 import { InfoPopover, NavBar } from '../../ui/kit';
 import { BalanceRecap } from '../Forecast';
 import { toast } from '../../ui/overlays';
 import { useMonth } from '../../ui/useMonth';
+import { DoubleCountNote, SplitLines } from '../SplitLines';
 
 export function MonthReview() {
   const db = useDb();
@@ -53,7 +54,7 @@ export function MonthReview() {
             </span>
             {pct != null && (
               <span className="num" style={{ fontSize: 15, fontWeight: 600, color: pct > 100 ? 'var(--bad)' : 'var(--tintText)' }}>
-                {Math.round(pct)}%
+                {percent(stats.total, budget!)}
               </span>
             )}
           </div>
@@ -64,9 +65,12 @@ export function MonthReview() {
           )}
           <div className="cap" style={{ fontSize: 15 }}>
             {plural(stats.count, 'expense')}
-            {budget != null ? ' · budget ' + money(budget, { compact: true }) : ' · no budget confirmed'}
+            {budget != null ? ' · budget ' + money(budget) : ' · no budget confirmed'}
           </div>
+          <div style={{ borderTop: '0.5px solid var(--sep)', margin: '10px 0 4px' }} />
+          <SplitLines s={stats} total={stats.total} small />
         </section>
+        <DoubleCountNote db={db} stats={stats} />
 
         {members(db).length === 2 && <Transfers db={db} month={month} />}
 
@@ -103,6 +107,9 @@ export function MonthReview() {
               Close {name} and prepare {monthShort(next)}
             </button>
           )}
+          <a className="btn ghost" href="#/statement">
+            See every figure of {name}
+          </a>
           <a className="btn ghost" href="#/export">
             <Icon name="excel" size={20} />
             Export {name} to Excel
@@ -118,6 +125,8 @@ function Transfers({ db, month }: { db: Db; month: string }) {
   const name = monthShort(month);
   const next = monthShort(addMonths(month, 1));
   const bal = memberBalances(db, month);
+  const spent = monthStats(db, month).total;
+  const sumPct = bal.reduce((a, b) => a + b.pct, 0);
   return (
     <section>
       <h2 className="sh">
@@ -138,7 +147,7 @@ function Transfers({ db, month }: { db: Db; month: string }) {
                 {money(Math.abs(b.balance))}
               </span>
               <InfoPopover label={'How ' + b.member.name + "'s balance at the end of " + name + ' was calculated'}>
-                <BalanceRecap b={b} month={month} />
+                <BalanceRecap b={b} month={month} spent={spent} sumPct={sumPct} />
               </InfoPopover>
             </span>
           </div>

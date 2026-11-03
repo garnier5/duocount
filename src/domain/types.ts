@@ -67,12 +67,49 @@ export interface Expense {
   /** 'total' = one amount for a whole category, typed at month end. */
   kind: 'single' | 'total';
   recurring?: boolean;
+  /** Earlier versions, oldest first, so a change never hides what was entered before. */
+  history?: ExpenseVersion[];
+}
+
+/** An expense as it was before a change: when that version was made, by whom, and its values. */
+export interface ExpenseVersion {
+  at: number;
+  by: string;
+  month: MonthKey;
+  label: string;
+  amount: Cents;
+  categoryId: string;
+  payer: Payer;
+  advance: boolean;
 }
 
 export interface MonthDoc {
   closedAt: number | null;
   /** Month-end checks the household answered ("None this month", "Keep both"). */
   dismissed: string[];
+  /** What the month showed each time it was closed, oldest first. */
+  history?: MonthClosing[];
+}
+
+/** A member's balance as worked out at a given moment (see memberBalances). */
+export interface BalanceSnapshot {
+  pct: number;
+  carryIn: Cents;
+  transferred: Cents;
+  transferRecorded: boolean;
+  expected: Cents;
+  advances: Cents;
+  between: Cents;
+  due: Cents;
+  balance: Cents;
+}
+
+export interface MonthClosing {
+  at: number;
+  by: string;
+  /** Household spending when the month was closed. */
+  spent: Cents;
+  balances: Record<string, BalanceSnapshot>;
 }
 
 export interface ForecastShare {
@@ -100,12 +137,31 @@ export interface Forecast {
    */
   total?: Cents;
   shares?: Record<string, ForecastShare>;
+  /** Every confirmation, oldest first: what was asked from each member each time. */
+  history?: PlanConfirmation[];
+}
+
+export interface PlanConfirmation {
+  at: number;
+  by: string;
+  total: Cents;
+  lines: Record<string, Cents>;
+  extras: ForecastExtra[];
+  shares: Record<string, ForecastShare>;
 }
 
 /** Amount a member actually transferred to the joint account for a month. */
 export interface Received {
   month: MonthKey;
   memberId: string;
+  amount: Cents;
+  /** Amounts recorded before, oldest first. */
+  history?: ReceivedVersion[];
+}
+
+export interface ReceivedVersion {
+  at: number;
+  by: string;
   amount: Cents;
 }
 

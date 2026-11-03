@@ -2,9 +2,13 @@ import { useEffect, useState } from 'react';
 import { useDb } from '../../data/store';
 import { addExpense, updateExpense } from '../../domain/actions';
 import { canEnterExpenses, maxMonth, monthStats, plannedFor, startMonth } from '../../domain/calc';
-import { categories, expenseRec, members } from '../../domain/select';
-import { addMonths, monthName, monthShort, type MonthKey } from '../../lib/dates';
-import { currencySymbol } from '../../lib/money';
+import { expenseVersion } from '../../domain/history';
+import { categories, expenseRec, member, members } from '../../domain/select';
+import type { Db } from '../../data/store';
+import type { Expense, Rec } from '../../domain/types';
+import { expenseDiff } from '../../sync/describe';
+import { addMonths, dateTime, monthName, monthShort, type MonthKey } from '../../lib/dates';
+import { currencySymbol, money } from '../../lib/money';
 import { Icon } from '../../ui/icons';
 import { Seg, Sheet, SheetNav, Switch } from '../../ui/kit';
 import { closeOverlay, toast, type ExpenseSheetState } from '../../ui/overlays';
@@ -189,6 +193,7 @@ export function ExpenseSheet({ state }: { state: ExpenseSheetState }) {
               Paid from the joint account.
             </div>
           )}
+          {existing && <ExpenseHistory db={db} rec={existing} />}
         </div>
       </div>
 
@@ -206,5 +211,31 @@ export function ExpenseSheet({ state }: { state: ExpenseSheetState }) {
         ))}
       </div>
     </Sheet>
+  );
+}
+
+/** Every version of an expense, newest first: who changed what, and when. */
+function ExpenseHistory({ db, rec }: { db: Db; rec: Rec<Expense> }) {
+  const versions = [...(rec.data.history ?? []), expenseVersion(rec)];
+  if (versions.length < 2) return null;
+  const who = (id: string) => member(db, id)?.name ?? 'someone';
+  return (
+    <section aria-label="History of this expense">
+      <h2 className="sh" style={{ padding: '6px 16px 7px' }}>
+        History
+      </h2>
+      <div className="card r12 lst in16">
+        {versions
+          .map((v, i) => (
+            <div key={v.at + ':' + i} style={{ padding: '10px 16px', fontSize: 15 }}>
+              <div className="cap">
+                {dateTime(v.at)} · {who(v.by)}
+              </div>
+              {i === 0 ? 'Was: ' + money(v.amount) + ' · ' + v.label + ' · ' + monthShort(v.month) : expenseDiff(db, versions[i - 1], v)}
+            </div>
+          ))
+          .reverse()}
+      </div>
+    </section>
   );
 }

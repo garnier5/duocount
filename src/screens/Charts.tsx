@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useDb } from '../data/store';
 import { axisTop, breakdown, chartMonths, monthPoint, type ChartRange, type Slice } from '../domain/charts';
 import { monthName, monthShort, type MonthKey } from '../lib/dates';
-import { currencySymbol, money } from '../lib/money';
+import { currencySymbol, money, percent } from '../lib/money';
 import { Icon } from '../ui/icons';
 import { BackLink, Seg } from '../ui/kit';
 import { useMonth } from '../ui/useMonth';
@@ -78,7 +78,7 @@ export function Charts() {
                   aria-label={
                     monthName(p.month) +
                     ': ' +
-                    (p.planned == null ? 'no plan' : 'planned ' + money(p.planned, { compact: true })) +
+                    (p.planned == null ? 'no plan' : 'planned ' + money(p.planned)) +
                     (p.paid == null ? ', not entered yet' : ', paid ' + money(p.paid))
                   }
                   onClick={() => setPicked(p.month)}
@@ -117,7 +117,7 @@ export function Charts() {
             <GapChip gap={gap} planned={point.planned} paid={point.paid} />
           </div>
           <div className="cap num" style={{ fontSize: 15, marginTop: 2 }}>
-            {point.planned == null ? 'No plan' : 'Planned ' + money(point.planned, { compact: true })} ·{' '}
+            {point.planned == null ? 'No plan' : 'Planned ' + money(point.planned)} ·{' '}
             {point.paid == null ? 'paid: expenses not entered yet' : 'paid ' + money(point.paid)}
           </div>
         </div>
@@ -143,7 +143,7 @@ function Breakdown({ month, mode, onMode }: { month: MonthKey; mode: PieMode; on
   const shown: PieMode = mode === 'paid' ? (paidOk ? 'paid' : 'planned') : planOk ? 'planned' : 'paid';
   const val = (s: Slice) => (shown === 'paid' ? s.paid : s.planned);
   const total = shown === 'paid' ? paidTotal : plannedTotal;
-  const pct = (v: number) => (total ? Math.round((v / total) * 100) : 0) + '%';
+  const pct = (v: number) => percent(v, total);
 
   return (
     <section className="card chart" aria-labelledby="c2">
@@ -175,7 +175,7 @@ function Breakdown({ month, mode, onMode }: { month: MonthKey; mode: PieMode; on
               <div className="donut-mid" aria-hidden="true">
                 <span className="cap">{shown === 'paid' ? 'Paid' : 'Planned'}</span>
                 <span className="num" style={{ fontSize: 20, fontWeight: 700 }}>
-                  {money(total, { whole: true })}
+                  {money(total)}
                 </span>
               </div>
             </div>
@@ -186,7 +186,7 @@ function Breakdown({ month, mode, onMode }: { month: MonthKey; mode: PieMode; on
                 <i style={{ background: s.color }} />
                 <span className="nm">{s.name}</span>
                 <span className="num" style={{ color: 'var(--sec)' }}>
-                  {money(val(s), { whole: true })}
+                  {money(val(s))}
                 </span>
                 <span className="num" style={{ fontWeight: 600, textAlign: 'right' }}>
                   {pct(val(s))}
@@ -212,7 +212,7 @@ function pieNote(slices: Slice[], shown: PieMode, planOk: boolean, paidOk: boole
   let k = slices[0];
   for (const s of slices) if (Math.abs(s.paid / ta - s.planned / tp) > Math.abs(k.paid / ta - k.planned / tp)) k = s;
   const name = k.id === 'other' ? 'Other costs' : k.name;
-  return 'Biggest shift: ' + name + ' is ' + Math.round((k.paid / ta) * 100) + '% of what you paid, against ' + Math.round((k.planned / tp) * 100) + '% of the plan.';
+  return 'Biggest shift: ' + name + ' is ' + percent(k.paid, ta) + ' of what you paid, against ' + percent(k.planned, tp) + ' of the plan.';
 }
 
 function GapChip({ gap, planned, paid }: { gap: number | null; planned: number | null; paid: number | null }) {

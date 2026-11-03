@@ -36,8 +36,10 @@ function expenseSub(view: Db, e: Expense): string {
   return cat + ' · ' + monthShort(e.month) + ' · ' + payerName(view, e.payer);
 }
 
+type ExpenseFields = Pick<Expense, 'amount' | 'month' | 'label' | 'categoryId' | 'payer' | 'advance'>;
+
 /** What changed between two versions of an expense: "Amount: €7.40 → €8.40". */
-export function expenseDiff(view: Db, a: Expense, b: Expense): string {
+export function expenseDiff(view: Db, a: ExpenseFields, b: ExpenseFields): string {
   const parts: string[] = [];
   if (a.amount !== b.amount) parts.push('Amount: ' + money(a.amount) + ' → ' + money(b.amount));
   if (a.month !== b.month) parts.push('Month: ' + monthShort(a.month) + ' → ' + monthShort(b.month));
@@ -47,7 +49,7 @@ export function expenseDiff(view: Db, a: Expense, b: Expense): string {
     parts.push('Category: ' + (cats.get(a.categoryId)?.name ?? '?') + ' → ' + (cats.get(b.categoryId)?.name ?? '?'));
   }
   if (a.payer !== b.payer || a.advance !== b.advance) {
-    const who = (e: Expense) => payerName(view, e.payer) + (e.advance ? ' (advance)' : '');
+    const who = (e: ExpenseFields) => payerName(view, e.payer) + (e.advance ? ' (advance)' : '');
     parts.push('Paid by: ' + who(a) + ' → ' + who(b));
   }
   return parts.join(' · ') || 'Details updated';

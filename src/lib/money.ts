@@ -14,39 +14,54 @@ export function getCurrency() {
   return currency;
 }
 
-function formatter(decimals: 0 | 2) {
-  const key = currency + decimals;
-  let f = formatters.get(key);
+function formatter() {
+  let f = formatters.get(currency);
   if (!f) {
-    f = new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency,
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals
-    });
-    formatters.set(key, f);
+    f = new Intl.NumberFormat('en-US', { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    formatters.set(currency, f);
   }
   return f;
 }
 
 export interface MoneyOptions {
-  /** Drop ".00" when the amount is a whole number (e.g. "€1,150"). */
-  compact?: boolean;
-  /** Always drop decimals, rounding to the nearest unit. */
-  whole?: boolean;
   /** Prefix positive amounts with "+". */
   sign?: boolean;
 }
 
-/** "€2,213.50", "−€68.50", "+€82.40", "€1,150". */
+/** Always to the cent, never rounded: "€2,213.50", "−€68.50", "+€82.40", "€1,150.00". */
 export function money(cents: Cents, opts: MoneyOptions = {}): string {
   const negative = cents < 0;
-  const abs = Math.abs(cents);
-  const whole = opts.whole || (opts.compact && abs % 100 === 0);
-  const text = whole ? formatter(0).format(Math.round(abs / 100)) : formatter(2).format(abs / 100);
+  const text = formatter().format(Math.abs(cents) / 100);
   if (negative) return MINUS + text;
   if (opts.sign && cents > 0) return '+' + text;
   return text;
+}
+
+/**
+ * A share of a total before it is split to the cent, which can have fractions of a cent:
+ * "€1,050.006". Shown next to the rounded amount so the rounding is visible.
+ */
+export function moneyExact(cents: number): string {
+  const f = new Intl.NumberFormat('en-US', { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  return (cents < 0 ? MINUS : '') + f.format(Math.abs(cents) / 100);
+}
+
+/** What a member's part of a total would be without cent rounding. */
+export function exactPart(total: Cents, pct: number, sumPct = 100): number {
+  return sumPct > 0 ? (total * pct) / sumPct : 0;
+}
+
+/**
+ * A percentage that never hides a difference: "100%" only when it is exactly 100,
+ * otherwise one decimal ("104.3%"), or two when one would look exact ("99.96%").
+ */
+export function percent(part: number, whole: number): string {
+  if (!whole) return '—';
+  const v = (part / whole) * 100;
+  if (Number.isInteger(v)) return v + '%';
+  let t = v.toFixed(1);
+  if (Number.isInteger(Number(t))) t = v.toFixed(2);
+  return t + '%';
 }
 
 /** Plain number without currency symbol, as copied to a banking app: "1543.60". */
@@ -61,7 +76,7 @@ export function groupedAmount(cents: Cents): string {
 
 /** Currency symbol on its own, e.g. "€". */
 export function currencySymbol(): string {
-  const part = formatter(2)
+  const part = formatter()
     .formatToParts(0)
     .find((p) => p.type === 'currency');
   return part ? part.value : currency;

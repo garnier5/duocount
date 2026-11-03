@@ -96,7 +96,7 @@ export function CategorySheet({ id, onDraft }: { id?: string; onDraft?: (input: 
             label="Planned per month"
             placeholder={currencySymbol() + '0'}
             value={planned}
-            format={(c) => money(c, { compact: true })}
+            format={(c) => money(c)}
             onCommit={(v) => setPlanned(v && v > 0 ? v : null)}
             style={{ height: 48, borderRadius: 12 }}
           />

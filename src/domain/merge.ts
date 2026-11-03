@@ -1,3 +1,4 @@
+import { mergeHistories, sameButHistory } from './history';
 import { mergeRevs, randomId, sameData } from './records';
 import type { Rec } from './types';
 
@@ -48,13 +49,18 @@ export function diffRecords(local: ReadonlyMap<string, Rec>, incoming: Rec[]): D
       if (loc.deleted && inc.deleted) out.silent.push(inc);
       else if (inc.deleted) out.changes.push({ kind: 'deleted', before: loc, after: inc });
       else if (loc.deleted) out.changes.push({ kind: 'added', before: loc, after: inc });
-      else if (sameData(loc.data, inc.data)) out.silent.push(inc);
+      // A newer version that only adds history entries changes nothing to review.
+      else if (sameButHistory(loc.data, inc.data)) out.silent.push(inc);
       else out.changes.push({ kind: 'changed', before: loc, after: inc });
       continue;
     }
     // Edited on both phones.
     if (!!loc.deleted === !!inc.deleted && (loc.deleted || sameData(loc.data, inc.data))) {
       out.silent.push({ ...inc, revs: mergeRevs(inc, loc) });
+    } else if (!!loc.deleted === !!inc.deleted && sameButHistory(loc.data, inc.data)) {
+      // Same values, different histories: keep both histories in a version that descends from both.
+      const rev = randomId();
+      out.silent.push({ ...inc, data: mergeHistories(inc, loc), rev, revs: [...mergeRevs(inc, loc), rev] });
     } else {
       out.conflicts.push({ mine: loc, theirs: inc });
     }
@@ -72,13 +78,16 @@ export function resolve(diff: Diff, choices: Record<string, Choice>, me: string)
   const out: Rec[] = [...diff.changes.map((c) => c.after), ...diff.silent];
   for (const c of diff.conflicts) {
     const choice = choices[c.mine.key] ?? 'theirs';
-    if (choice === 'theirs') {
+    const [chosen, other] = choice === 'theirs' ? [c.theirs, c.mine] : [c.mine, c.theirs];
+    // The version not picked goes into the history, along with both phones' histories.
+    const data = mergeHistories(chosen, other);
+    if (choice === 'theirs' && sameData(data, chosen.data)) {
       out.push({ ...c.theirs, revs: mergeRevs(c.theirs, c.mine) });
     } else {
-      // A new version that descends from both, so the other phone fast-forwards to ours.
+      // A new version that descends from both, so the other phone fast-forwards to it.
       const rev = randomId();
-      const merged = { ...c.mine, rev, revs: [...mergeRevs(c.mine, c.theirs), rev], at: Date.now(), by: me };
-      out.push(merged);
+      const mine = choice === 'mine';
+      out.push({ ...chosen, data, rev, revs: [...mergeRevs(chosen, other), rev], at: mine ? Date.now() : chosen.at, by: mine ? me : chosen.by });
     }
   }
   return out;

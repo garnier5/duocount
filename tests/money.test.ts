@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { money, parseAmount, splitByShares } from '../src/lib/money';
+import { exactPart, money, moneyExact, parseAmount, percent, splitByShares } from '../src/lib/money';
 
 describe('parseAmount', () => {
   it.each([
@@ -27,8 +27,8 @@ describe('money', () => {
     expect(money(221350)).toBe('€2,213.50');
     expect(money(-6850)).toBe('−€68.50');
     expect(money(8240, { sign: true })).toBe('+€82.40');
-    expect(money(115000, { compact: true })).toBe('€1,150');
-    expect(money(5498, { compact: true })).toBe('€54.98');
+    expect(money(115000)).toBe('€1,150.00');
+    expect(money(5498)).toBe('€54.98');
   });
 });
 
@@ -45,5 +45,20 @@ describe('splitByShares', () => {
       { id: 'c', pct: 34 }
     ]);
     expect(odd.a + odd.b + odd.c).toBe(1001);
+  });
+});
+
+describe('exact figures', () => {
+  it('shows percentages without hiding a difference', () => {
+    expect(percent(100, 100)).toBe('100%');
+    expect(percent(1043, 1000)).toBe('104.3%');
+    expect(percent(9996, 10000)).toBe('99.96%');
+    expect(percent(1, 3)).toBe('33.3%');
+    expect(percent(5, 0)).toBe('—');
+  });
+
+  it('shows the share before cent rounding', () => {
+    expect(moneyExact(exactPart(175001, 60))).toBe('€1,050.006');
+    expect(moneyExact(exactPart(175000, 60))).toBe('€1,050.00');
   });
 });

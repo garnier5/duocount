@@ -44,7 +44,7 @@ export function MonthPicker() {
           plural(stats.count, 'expense') +
           ' · ' +
           money(stats.total) +
-          (budget != null ? ' of ' + money(budget, { compact: true }) : '') +
+          (budget != null ? ' of ' + money(budget) : '') +
           (closedAt ? ' · closed ' + shortDay(dateKey(new Date(closedAt))) : ''),
         selectable: true,
         future: false
@@ -55,7 +55,7 @@ export function MonthPicker() {
       stat: 'In progress',
       color: 'var(--warn)',
       dot: 'var(--warn)',
-      detail: (stats.count ? plural(stats.count, 'expense') + ' · ' + money(stats.total) : 'Nothing entered yet') + (budget != null ? ' · budget ' + money(budget, { compact: true }) : ''),
+      detail: (stats.count ? plural(stats.count, 'expense') + ' · ' + money(stats.total) : 'Nothing entered yet') + (budget != null ? ' · budget ' + money(budget) : ''),
       selectable: true,
       future: false
     };

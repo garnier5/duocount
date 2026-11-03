@@ -84,6 +84,44 @@ function nullable<T>(v: unknown, check: (v: unknown) => T): T | null {
   return v === null ? null : check(v);
 }
 
+/** History entries kept per record (see domain/history.ts), with room for older files. */
+const MAX_HISTORY = 200;
+
+function history(v: unknown, what: string, entry: (x: Obj) => void) {
+  optional(v, (h) =>
+    list(h, what, MAX_HISTORY).forEach((e) => {
+      const x = obj(e, what);
+      time(x.at, what);
+      id(x.by, what);
+      entry(x);
+    })
+  );
+}
+
+function shares(v: unknown) {
+  for (const [k, s] of Object.entries(obj(v, 'shares'))) {
+    id(k, 'shares');
+    const x = obj(s, 'shares');
+    num(x.pct, 'share', 0, 100);
+    cents(x.gross, 'shares');
+    cents(x.carry, 'shares');
+    cents(x.transfer, 'shares');
+  }
+}
+
+function planLines(lines: unknown, extras: unknown) {
+  for (const [k, v] of Object.entries(obj(lines, 'forecast'))) {
+    id(k, 'forecast category');
+    cents(v, 'planned amount');
+  }
+  list(extras, 'forecast extras', 1000).forEach((v) => {
+    const x = obj(v, 'forecast extra');
+    id(x.id, 'forecast extra');
+    str(x.label, 'forecast extra', 2000);
+    cents(x.amount, 'forecast extra');
+  });
+}
+
 /** Grey, for a member or category whose color can't be used. */
 const FALLBACK_COLOR = '#8E8E93';
 
@@ -124,39 +162,45 @@ const DATA: Record<RecType, (d: Obj, fix: Obj) => void> = {
     bool(d.advance, 'advance');
     if (d.kind !== 'single' && d.kind !== 'total') fail('expense kind');
     optional(d.recurring, (v) => bool(v, 'recurring expense'));
+    history(d.history, 'expense history', (x) => {
+      match(x.month, MONTH, 'expense history');
+      str(x.label, 'expense history', 2000);
+      cents(x.amount, 'expense history');
+      id(x.categoryId, 'expense history');
+      id(x.payer, 'expense history');
+      bool(x.advance, 'expense history');
+    });
   },
   month(d) {
     nullable(d.closedAt, (v) => time(v, 'closing date'));
     list(d.dismissed, 'month-end checks', 1000).forEach((v) => str(v, 'month-end check'));
+    history(d.history, 'closing history', (x) => {
+      cents(x.spent, 'closing history');
+      for (const [k, b] of Object.entries(obj(x.balances, 'closing history'))) {
+        id(k, 'closing history');
+        const y = obj(b, 'closing history');
+        num(y.pct, 'closing history', 0, 100);
+        for (const f of ['carryIn', 'transferred', 'expected', 'advances', 'between', 'due', 'balance']) cents(y[f], 'closing history');
+        bool(y.transferRecorded, 'closing history');
+      }
+    });
   },
   forecast(d) {
-    for (const [k, v] of Object.entries(obj(d.lines, 'forecast'))) {
-      id(k, 'forecast category');
-      cents(v, 'planned amount');
-    }
-    list(d.extras, 'forecast extras', 1000).forEach((v) => {
-      const x = obj(v, 'forecast extra');
-      id(x.id, 'forecast extra');
-      str(x.label, 'forecast extra', 2000);
-      cents(x.amount, 'forecast extra');
-    });
+    planLines(d.lines, d.extras);
     nullable(d.confirmedAt, (v) => time(v, 'confirmation date'));
     optional(d.total, (v) => cents(v, 'forecast total'));
-    optional(d.shares, (v) => {
-      for (const [k, s] of Object.entries(obj(v, 'shares'))) {
-        id(k, 'shares');
-        const x = obj(s, 'shares');
-        num(x.pct, 'share', 0, 100);
-        cents(x.gross, 'shares');
-        cents(x.carry, 'shares');
-        cents(x.transfer, 'shares');
-      }
+    optional(d.shares, shares);
+    history(d.history, 'plan history', (x) => {
+      cents(x.total, 'plan history');
+      planLines(x.lines, x.extras);
+      shares(x.shares);
     });
   },
   received(d) {
     match(d.month, MONTH, 'transfer month');
     id(d.memberId, 'transfer member');
     cents(d.amount, 'transfer amount');
+    history(d.history, 'transfer history', (x) => cents(x.amount, 'transfer history'));
   }
 };
 

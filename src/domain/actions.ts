@@ -2,10 +2,11 @@ import { getDb, setLocal, write } from '../data/store';
 import { addMonths, monthKey, monthShort, type MonthKey } from '../lib/dates';
 import type { Cents } from '../lib/money';
 import { makeCheck } from '../sync/crypto';
-import { computeShares, forecastView } from './calc';
-import { createRec, editRec, randomId, recKey, uuid } from './records';
+import { computeShares, forecastView, memberBalances, monthStats } from './calc';
+import { expenseVersion, pushHistory, receivedVersion, withConfirmations } from './history';
+import { createRec, editRec, randomId, recKey, sameData, uuid } from './records';
 import { categories, expenseRec, expensesOf, forecastRec, householdRec, members, monthRec, receivedRec } from './select';
-import type { Category, Expense, Forecast, Household, Member, MonthDoc, Rec, RecType, Received } from './types';
+import type { BalanceSnapshot, Category, Expense, Forecast, Household, Member, MonthDoc, Rec, RecType, Received } from './types';
 
 function by(): string {
   return getDb().local.meId ?? 'unknown';
@@ -59,7 +60,10 @@ export function addExpense(input: ExpenseInput): string {
 export function updateExpense(id: string, input: ExpenseInput) {
   const cur = expenseRec(getDb(), id);
   if (!cur) return;
-  write([editRec(cur, { ...toExpense(input), kind: input.kind ?? cur.data.kind }, by())]);
+  const next: Expense = { ...toExpense(input), kind: input.kind ?? cur.data.kind };
+  const { history, ...was } = cur.data;
+  if (sameData(next, was)) return;
+  write([editRec(cur, { ...next, history: pushHistory(history, expenseVersion(cur)) }, by())]);
 }
 
 /** Deletes an expense and returns a function that brings it back. */
@@ -99,18 +103,26 @@ export function setCategoryTotal(month: MonthKey, cat: { id: string; name: strin
 
 // ---------- Months ----------
 
-function saveMonth(month: MonthKey, patch: Partial<MonthDoc>) {
+function saveMonth(month: MonthKey, patch: (base: MonthDoc) => Partial<MonthDoc>) {
   const cur = monthRec(getDb(), month);
   const base: MonthDoc = cur && !cur.deleted ? cur.data : { closedAt: null, dismissed: [] };
-  write([upsert<MonthDoc>('month', month, { ...base, ...patch })]);
+  write([upsert<MonthDoc>('month', month, { ...base, ...patch(base) })]);
 }
 
+/** Closes the month and keeps what it showed at that moment, to compare with later corrections. */
 export function closeMonth(month: MonthKey) {
-  saveMonth(month, { closedAt: Date.now() });
+  const db = getDb();
+  const at = Date.now();
+  const balances: Record<string, BalanceSnapshot> = {};
+  for (const b of memberBalances(db, month)) {
+    const { member, advanceCount: _count, ...snap } = b;
+    balances[member.id] = snap;
+  }
+  saveMonth(month, (base) => ({ closedAt: at, history: pushHistory(base.history, { at, by: by(), spent: monthStats(db, month).total, balances }) }));
 }
 
 export function reopenMonth(month: MonthKey) {
-  saveMonth(month, { closedAt: null });
+  saveMonth(month, () => ({ closedAt: null }));
 }
 
 // ---------- Forecast ----------
@@ -150,25 +162,29 @@ export function removeForecastExtra(month: MonthKey, id: string) {
   saveForecast(month, { ...f, extras: f.extras.filter((x) => x.id !== id) });
 }
 
+/** Confirms the plan, or works out the transfers again from the current balances (each time is kept). */
 export function confirmForecast(month: MonthKey) {
   const db = getDb();
-  const f = currentForecast(month);
+  const f = withConfirmations(forecastRec(db, month), currentForecast(month));
   const view = forecastView(db, month);
   const lines: Record<string, Cents> = {};
   view.lines.forEach((l) => (lines[l.cat.id] = l.amount));
+  const at = Date.now();
+  const shares = computeShares(db, view.total, month);
   saveForecast(month, {
     lines,
     extras: f.extras,
-    confirmedAt: Date.now(),
+    confirmedAt: at,
     total: view.total,
-    shares: computeShares(db, view.total, month)
+    shares,
+    history: pushHistory(f.history, { at, by: by(), total: view.total, lines, extras: f.extras, shares })
   });
 }
 
 export function unconfirmForecast(month: MonthKey) {
-  const f = currentForecast(month);
+  const f = withConfirmations(forecastRec(getDb(), month), currentForecast(month));
   // Keep the confirmed shares: their percentages still apply if the month has expenses.
-  saveForecast(month, { lines: f.lines, extras: f.extras, confirmedAt: null, shares: f.shares });
+  saveForecast(month, { lines: f.lines, extras: f.extras, confirmedAt: null, shares: f.shares, ...(f.history ? { history: f.history } : {}) });
 }
 
 export function setReceived(month: MonthKey, memberId: string, amount: Cents | null) {
@@ -178,7 +194,11 @@ export function setReceived(month: MonthKey, memberId: string, amount: Cents | n
     if (cur) write([editRec(cur, cur.data, by(), true)]);
     return;
   }
-  write([upsert<Received>('received', id, { month, memberId, amount })]);
+  if (cur && cur.data.amount === amount) return;
+  // Also after "Not done yet": the amount recorded then stays in the history.
+  const was = cur ?? get<Received>('received', id);
+  const history = was ? pushHistory(was.data.history, receivedVersion(was)) : undefined;
+  write([upsert<Received>('received', id, { month, memberId, amount, ...(history ? { history } : {}) })]);
 }
 
 // ---------- Categories ----------

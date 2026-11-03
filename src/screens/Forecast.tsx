@@ -1,16 +1,19 @@
 import { useState } from 'react';
 import { setLocal, useDb, type Db } from '../data/store';
 import { addForecastExtra, confirmForecast, removeForecastExtra, setForecastLine, unconfirmForecast, updateForecastExtra } from '../domain/actions';
-import { canPlan, forecastView, isClosed, keepsOldShares, memberBalances, monthStats, type ForecastView, type MemberBalance, type ShareView } from '../domain/calc';
+import { canPlan, carryCheck, forecastView, isClosed, keepsOldShares, memberBalances, monthStats, type CarryCheck, type ForecastView, type MemberBalance, type ShareView } from '../domain/calc';
 import { NEUTRAL } from '../domain/defaults';
-import { members } from '../domain/select';
+import { members, received } from '../domain/select';
 import { addMonths, dateKey, lastDayOf, monthShort, plural, shortDay, type MonthKey } from '../lib/dates';
-import { money } from '../lib/money';
+import { exactPart, money, moneyExact, percent } from '../lib/money';
 import { navigate } from '../lib/router';
 import { Icon } from '../ui/icons';
 import { Alert, AmountInput, Avatar, BackLink, InfoPopover, Note, Tile } from '../ui/kit';
 import { toast } from '../ui/overlays';
 import { useMonth } from '../ui/useMonth';
+import { BalanceLines } from './BalanceLines';
+import { PlanHistory } from './PlanHistory';
+import { MonthGap, monthGap } from './PlanGap';
 import { TransfersCard } from './Transfers';
 
 export function Forecast() {
@@ -71,7 +74,6 @@ function NotOpen({ month }: { month: MonthKey }) {
 function ReadOnly({ db, view }: { db: Db; view: ForecastView }) {
   const [reopen, setReopen] = useState(false);
   const stats = monthStats(db, view.month);
-  const pct = view.total ? Math.round((stats.total / view.total) * 100) : 0;
   return (
     <>
       <section className="card r16" style={{ padding: '16px 18px' }}>
@@ -92,11 +94,12 @@ function ReadOnly({ db, view }: { db: Db; view: ForecastView }) {
             Actually spent
           </span>
           <span className="num" style={{ fontSize: 17, fontWeight: 600 }}>
-            {money(stats.total)} · {pct}%
+            {money(stats.total)} · {percent(stats.total, view.total)}
           </span>
         </div>
       </section>
       <TransfersCard db={db} month={view.month} />
+      <PlanHistory db={db} month={view.month} />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <p className="cap" style={{ margin: '0 4px', textAlign: 'center' }}>
           A confirmed forecast is read-only.{' '}
@@ -160,7 +163,7 @@ function Plan({ db, view }: { db: Db; view: ForecastView }) {
                 'Same as ' + monthShort(prev)
               ) : (
                 <>
-                  <span style={{ color: diff < 0 ? 'var(--good)' : 'var(--warn)', fontWeight: 600 }}>{money(diff, { sign: true })}</span> compared with {monthShort(prev)} ({money(view.prevTotal, { compact: true })})
+                  <span style={{ color: diff < 0 ? 'var(--good)' : 'var(--warn)', fontWeight: 600 }}>{money(diff, { sign: true })}</span> compared with {monthShort(prev)} ({money(view.prevTotal)})
                 </>
               )}
             </div>
@@ -187,7 +190,7 @@ function Plan({ db, view }: { db: Db; view: ForecastView }) {
                 label={'Planned amount for ' + l.cat.name}
                 value={l.amount}
                 disabled={confirmed}
-                format={(c) => money(c, { compact: true })}
+                format={(c) => money(c)}
                 onCommit={(v) => setForecastLine(month, l.cat.id, v ?? 0)}
               />
             </div>
@@ -213,7 +216,7 @@ function Plan({ db, view }: { db: Db; view: ForecastView }) {
                 label={'Planned amount for ' + (x.label || 'one-off expense')}
                 value={x.amount}
                 disabled={confirmed}
-                format={(c) => money(c, { compact: true })}
+                format={(c) => money(c)}
                 onCommit={(v) => updateForecastExtra(month, x.id, { amount: v ?? 0 })}
               />
               {!confirmed && (
@@ -237,11 +240,7 @@ function Plan({ db, view }: { db: Db; view: ForecastView }) {
       </section>
 
       {view.carry.length > 0 && <CarrySection db={db} view={view} prev={prev} />}
-      {confirmed && view.carry.some((b) => b.balance !== (view.shares.find((s) => s.member.id === b.member.id)?.carry ?? 0)) && (
-        <Note tone="tint" icon="refresh">
-          {monthShort(prev)} changed after this forecast was confirmed. The transfers below stay as confirmed: the difference is carried into next month.
-        </Note>
-      )}
+      {confirmed && <CarryChanged db={db} month={month} checks={carryCheck(db, month)} />}
 
       {keepsOldShares(db, month) && (
         <Note tone="tint" icon="info">
@@ -260,7 +259,7 @@ function Plan({ db, view }: { db: Db; view: ForecastView }) {
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {view.shares.map((s) => (
-              <ShareCard key={s.member.id} s={s} total={view.total} prev={prev} />
+              <ShareCard key={s.member.id} s={s} total={view.total} prev={prev} sumPct={view.shares.reduce((a, x) => a + x.pct, 0)} confirmedAt={view.confirmedAt} />
             ))}
             <div className="note">
               <Icon name="checkCircle" size={20} style={{ color: 'var(--good)' }} />
@@ -306,6 +305,7 @@ function Plan({ db, view }: { db: Db; view: ForecastView }) {
               with the household.
             </p>
             <TransfersCard db={db} month={month} title="Transfers to make" />
+            <PlanHistory db={db} month={month} />
           </>
         ) : (
           <>
@@ -342,6 +342,9 @@ function CarrySection({ db, view, prev }: { db: Db; view: ForecastView; prev: Mo
   const name = monthShort(prev);
   // How each balance carried into the previous month was reached, one month further back.
   const before = memberBalances(db, addMonths(prev, -1));
+  const spent = monthStats(db, prev).total;
+  const sumPct = view.carry.reduce((a, x) => a + x.pct, 0);
+  const gap = monthGap(db, prev);
   return (
     <section aria-labelledby="carry">
       <h2 className="sh lg" id="carry" style={{ paddingBottom: 8 }}>
@@ -351,6 +354,19 @@ function CarrySection({ db, view, prev }: { db: Db; view: ForecastView; prev: Mo
         What each person put in during {name} compared with their share of what was really spent. It is added to or taken from this month's transfer.
       </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {gap && (
+          <div className="card r16 cl has-pop" style={{ padding: '12px 18px', overflow: 'visible' }}>
+            <span className="l">
+              {name}: planned {money(gap.planned)}, spent {money(gap.spent)}{' '}
+              <InfoPopover label={'Where the ' + name + ' difference comes from'}>
+                <MonthGap db={db} month={prev} />
+              </InfoPopover>
+            </span>
+            <span className="num" style={{ fontWeight: 600, color: gap.gap > 0 ? 'var(--overInk)' : gap.gap < 0 ? 'var(--underInk)' : undefined }}>
+              {money(gap.gap, { sign: true })}
+            </span>
+          </div>
+        )}
         {view.carry.map((b) => {
           const res = balanceLabel(b.balance);
           return (
@@ -363,41 +379,16 @@ function CarrySection({ db, view, prev }: { db: Db; view: ForecastView; prev: Mo
                 </span>
               </div>
               {b.carryIn !== 0 && (
-                <div className="cl has-pop">
+                <div className="cl has-pop" style={{ paddingTop: 0 }}>
                   <span className="l">
-                    Balance before {name}{' '}
+                    How the balance before {name} was reached{' '}
                     <InfoPopover label={'How the balance before ' + name + ' was calculated'}>
-                      <BalanceRecap b={before.find((x) => x.member.id === b.member.id)} month={addMonths(prev, -1)} />
+                      <BalanceRecap b={before.find((x) => x.member.id === b.member.id)} month={addMonths(prev, -1)} spent={monthStats(db, addMonths(prev, -1)).total} sumPct={sumPct} />
                     </InfoPopover>
                   </span>
-                  <span className="num">{money(b.carryIn, { sign: true })}</span>
                 </div>
               )}
-              <div className="cl">
-                <span className="l">
-                  Transferred for {name}
-                  {b.transferRecorded ? '' : ' (as planned)'}
-                </span>
-                <span className="num">{money(b.transferred, { sign: true })}</span>
-              </div>
-              {b.advances > 0 && (
-                <div className="cl">
-                  <span className="l">Paid for the household ({b.advanceCount})</span>
-                  <span className="num">{money(b.advances, { sign: true })}</span>
-                </div>
-              )}
-              {b.between !== 0 && (
-                <div className="cl">
-                  <span className="l">{b.between > 0 ? 'Paid for the other member' : 'Paid for them by the other member'}</span>
-                  <span className="num">{money(b.between, { sign: true })}</span>
-                </div>
-              )}
-              <div className="cl">
-                <span className="l">
-                  {b.pct}% of {name} spending
-                </span>
-                <span className="num">{money(-b.due)}</span>
-              </div>
+              <BalanceLines b={b} month={prev} spent={spent} sumPct={sumPct} count={b.advanceCount} db={db} memberId={b.member.id} />
             </article>
           );
         })}
@@ -407,10 +398,9 @@ function CarrySection({ db, view, prev }: { db: Db; view: ForecastView; prev: Mo
 }
 
 /** The calculation behind a balance carried into the next month, shown in the info bubble. */
-export function BalanceRecap({ b, month }: { b: MemberBalance | undefined; month: MonthKey }) {
+export function BalanceRecap({ b, month, spent, sumPct }: { b: MemberBalance | undefined; month: MonthKey; spent: number; sumPct: number }) {
   const name = monthShort(month);
   if (!b) return null;
-  const res = balanceLabel(b.balance);
   return (
     <>
       <span className="t">
@@ -419,51 +409,17 @@ export function BalanceRecap({ b, month }: { b: MemberBalance | undefined; month
       <span className="cap" style={{ marginBottom: 8 }}>
         Worked out when {name} ended, then carried into the next month:
       </span>
-      {b.carryIn !== 0 && (
-        <span className="cl">
-          <span className="l">Balance before {name}</span>
-          <span className="num">{money(b.carryIn, { sign: true })}</span>
-        </span>
-      )}
-      <span className="cl">
-        <span className="l">
-                  Transferred for {name}
-                  {b.transferRecorded ? '' : ' (as planned)'}
-                </span>
-        <span className="num">{money(b.transferred, { sign: true })}</span>
-      </span>
-      {b.advances > 0 && (
-        <span className="cl">
-          <span className="l">Paid for the household</span>
-          <span className="num">{money(b.advances, { sign: true })}</span>
-        </span>
-      )}
-      {b.between !== 0 && (
-        <span className="cl">
-          <span className="l">{b.between > 0 ? 'Paid for the other member' : 'Paid for them by the other member'}</span>
-          <span className="num">{money(b.between, { sign: true })}</span>
-        </span>
-      )}
-      <span className="cl">
-        <span className="l">
-          {b.pct}% of {name} spending
-        </span>
-        <span className="num">{money(-b.due)}</span>
-      </span>
-      <span className="cl" style={{ borderTop: '0.5px solid var(--sep)', marginTop: 4, paddingTop: 7, fontWeight: 600 }}>
-        <span>= {res.text.split(' ')[0]}</span>
-        <span className="num" style={{ color: res.color }}>
-          {money(b.balance, { sign: true })}
-        </span>
-      </span>
+      <BalanceLines b={b} month={month} spent={spent} sumPct={sumPct} count={b.advanceCount} />
       <span className="cap" style={{ marginTop: 8 }}>
-        Each month starts from the balance the month before ended with. It is also shown on the {name} page, under Balances.
+        Each month starts from the balance the month before ended with. Every figure of {name} is in its statement, from the {name} page.
       </span>
     </>
   );
 }
 
-function ShareCard({ s, total, prev }: { s: ShareView; total: number; prev: MonthKey }) {
+function ShareCard({ s, total, prev, sumPct, confirmedAt }: { s: ShareView; total: number; prev: MonthKey; sumPct: number; confirmedAt: number | null }) {
+  const exact = exactPart(total, s.pct, sumPct);
+  const asOf = confirmedAt ? ' (as on ' + shortDay(dateKey(new Date(confirmedAt))) + ')' : '';
   return (
     <article className="card r16" style={{ padding: '16px 18px' }} aria-label={s.member.name + "'s share"}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
@@ -479,9 +435,14 @@ function ShareCard({ s, total, prev }: { s: ShareView; total: number; prev: Mont
         <span className="l">× {s.pct}%</span>
         <span className="num">{money(s.gross)}</span>
       </div>
+      {exact !== s.gross && (
+        <div className="cap" style={{ marginTop: -2 }}>
+          Exactly {moneyExact(exact)}, rounded to the cent so the shares add up to {money(total)}.
+        </div>
+      )}
       {s.carry !== 0 && (
         <div className="cl">
-          <span className="l">{s.carry > 0 ? '− Credit from ' + monthShort(prev) : '+ Still owed from ' + monthShort(prev)}</span>
+          <span className="l">{(s.carry > 0 ? '− Credit from ' : '+ Still owed from ') + monthShort(prev) + asOf}</span>
           <span className="num" style={{ color: s.carry > 0 ? 'var(--good)' : 'var(--warn)' }}>
             {money(-s.carry, { sign: true })}
           </span>
@@ -499,5 +460,57 @@ function ShareCard({ s, total, prev }: { s: ShareView; total: number; prev: Mont
         </div>
       </div>
     </article>
+  );
+}
+
+/** A confirmed plan whose balances from the month before have changed since: what was used, what it is now. */
+function CarryChanged({ db, month, checks }: { db: Db; month: MonthKey; checks: CarryCheck[] }) {
+  const [ask, setAsk] = useState(false);
+  if (!checks.some((c) => c.diff !== 0)) return null;
+  const prev = monthShort(addMonths(month, -1));
+  const next = monthShort(addMonths(month, 1));
+  const ticked = checks.some((c) => received(db, month, c.member.id) != null);
+  return (
+    <section className="note tint" style={{ flexDirection: 'column', gap: 8 }} aria-label={prev + ' changed after this plan was confirmed'}>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <Icon name="refresh" size={20} style={{ color: 'var(--tintText)', flex: 'none', marginTop: 1 }} />
+        <span>
+          {prev} changed after this plan was confirmed. The transfers below use the balances as they were then. As is, the difference is carried into {next}.
+        </span>
+      </div>
+      {checks.map((c) => (
+        <div key={c.member.id} className="cl" style={{ fontSize: 13, padding: 0 }}>
+          <span className="l">
+            {c.member.name}: used {money(c.atConfirm, { sign: true })} · now {money(c.now, { sign: true })}
+          </span>
+          <span className="num" style={{ fontWeight: 600 }}>
+            {money(c.diff, { sign: true })}
+          </span>
+        </div>
+      ))}
+      <button className="btn sec" type="button" style={{ minHeight: 44 }} onClick={() => setAsk(true)}>
+        Recalculate the transfers now
+      </button>
+      {ask && (
+        <Alert
+          title="Recalculate the transfers?"
+          message={
+            'The ' + monthShort(month) + ' transfers will use the balances from ' + prev + ' as they are now. The amounts asked until now stay in the plan history.' +
+            (ticked ? ' Transfers already ticked stay as recorded: any difference is carried into ' + next + '.' : '')
+          }
+          buttons={[
+            { label: 'Cancel', style: 'cancel', onClick: () => setAsk(false) },
+            {
+              label: 'Recalculate',
+              onClick: () => {
+                confirmForecast(month);
+                setAsk(false);
+                toast(monthShort(month) + ' transfers recalculated', undefined, { low: true });
+              }
+            }
+          ]}
+        />
+      )}
+    </section>
   );
 }

@@ -1,17 +1,20 @@
 import type { Db } from '../data/store';
 import { addMonths, monthName, type MonthKey } from '../lib/dates';
 import { slug } from '../lib/share';
-import { budgetOf, forecastView, isBetweenMembers, monthStats, plannedFor } from '../domain/calc';
-import { allCategories, allMembers, expenses, forecastRec, forecasts, household, received } from '../domain/select';
+import { budgetOf, forecastView, isBetweenMembers, memberBalances, monthStats, plannedFor } from '../domain/calc';
+import { closings, confirmations } from '../domain/history';
+import { allCategories, allMembers, expenses, forecastRec, forecasts, household, monthDoc, received } from '../domain/select';
 import { buildXlsx, type Cell, type Sheet } from './xlsx';
 
-export type SheetId = 'exp' | 'cat' | 'plan' | 'fc' | 'adv';
+export type SheetId = 'exp' | 'cat' | 'plan' | 'fc' | 'bal' | 'hist' | 'adv';
 
 export const SHEETS: { id: SheetId; name: string; title: string; caption: string }[] = [
   { id: 'exp', name: 'Expenses', title: 'Expenses', caption: 'One row each: month, label, category, paid by, advance, amount' },
-  { id: 'cat', name: 'By category', title: 'Totals by category', caption: 'Spent, planned and % for each month' },
+  { id: 'cat', name: 'By category', title: 'Totals by category', caption: 'Spent (category totals and one by one apart), planned and %' },
   { id: 'plan', name: 'Plan by category', title: 'Plan by category', caption: 'Planned amount for each category and one-off expense' },
   { id: 'fc', name: 'Forecast', title: 'Forecast and shares', caption: 'Planned total, % and transfer per member' },
+  { id: 'bal', name: 'Balances', title: 'Balances', caption: 'Every step of each balance, per person and month' },
+  { id: 'hist', name: 'Plan history', title: 'Plan history', caption: 'Each time a plan was confirmed, with the transfers asked' },
   { id: 'adv', name: 'Advances', title: 'Advances', caption: 'Who paid what, and when it was repaid' }
 ];
 
@@ -55,7 +58,7 @@ export function buildWorkbook(db: Db, months: MonthKey[], sheets: SheetId[]): Ui
   }
 
   if (sheets.includes('cat')) {
-    const rows: Cell[][] = [[H('Month'), H('Category'), H('Expenses'), H('Spent'), H('Planned'), H('% of plan')]];
+    const rows: Cell[][] = [[H('Month'), H('Category'), H('Expenses'), H('Totals by category'), H('One by one, joint account'), H('One by one, paid by members'), H('Spent'), H('Planned'), H('% of plan')]];
     for (const m of months) {
       const stats = monthStats(db, m);
       const ids = new Set<string>([...stats.byCat.keys()]);
@@ -63,21 +66,35 @@ export function buildWorkbook(db: Db, months: MonthKey[], sheets: SheetId[]): Ui
       if (f.confirmedAt) f.lines.forEach((l) => l.amount && ids.add(l.cat.id));
       const sorted = [...ids].sort((a, b) => (cats.get(a)?.order ?? 99) - (cats.get(b)?.order ?? 99));
       for (const id of sorted) {
-        const spent = stats.byCat.get(id)?.spent ?? 0;
+        const st = stats.byCat.get(id);
+        const spent = st?.spent ?? 0;
         const planned = plannedFor(db, m, id);
-        rows.push([monthName(m), catName(id), stats.byCat.get(id)?.count ?? 0, eur(spent), planned ? eur(planned) : null, planned ? { v: spent / planned, s: 'percent' } : null]);
+        rows.push([
+          monthName(m),
+          catName(id),
+          st?.count ?? 0,
+          eur(st?.totals ?? 0),
+          eur(st?.singlesJoint ?? 0),
+          eur(st?.singlesAdvance ?? 0),
+          eur(spent),
+          planned ? eur(planned) : null,
+          planned ? { v: spent / planned, s: 'percent' } : null
+        ]);
       }
       const budget = budgetOf(db, m);
       rows.push([
         { v: monthName(m) + ' total', s: 'bold' },
         null,
         stats.count,
+        { v: stats.totals / 100, s: 'moneyBold' },
+        { v: stats.singlesJoint / 100, s: 'moneyBold' },
+        { v: stats.singlesAdvance / 100, s: 'moneyBold' },
         { v: stats.total / 100, s: 'moneyBold' },
         budget ? { v: budget / 100, s: 'moneyBold' } : null,
         budget ? { v: stats.total / budget, s: 'percent' } : null
       ]);
     }
-    out.push({ name: 'By category', columns: [{ width: 18 }, { width: 22 }, { width: 10 }, { width: 12 }, { width: 12 }, { width: 12 }], rows });
+    out.push({ name: 'By category', columns: [{ width: 18 }, { width: 22 }, { width: 10 }, { width: 18 }, { width: 24 }, { width: 26 }, { width: 12 }, { width: 12 }, { width: 12 }], rows });
   }
 
   if (sheets.includes('plan')) {
@@ -100,7 +117,7 @@ export function buildWorkbook(db: Db, months: MonthKey[], sheets: SheetId[]): Ui
   }
 
   if (sheets.includes('fc')) {
-    const rows: Cell[][] = [[H('Month'), H('Status'), H('Planned total'), H('Member'), H('Share'), H('Share of total'), H('Balance carried in'), H('To transfer'), H('Received')]];
+    const rows: Cell[][] = [[H('Month'), H('Status'), H('Planned total'), H('Member'), H('Share'), H('Share of total'), H('Added for the previous balance'), H('To transfer'), H('Received')]];
     for (const m of months) {
       if (!forecasts(db).some((f) => f.id === m)) continue;
       const f = forecastView(db, m);
@@ -119,7 +136,78 @@ export function buildWorkbook(db: Db, months: MonthKey[], sheets: SheetId[]): Ui
         ]);
       }
     }
-    out.push({ name: 'Forecast', columns: [{ width: 18 }, { width: 11 }, { width: 14 }, { width: 16 }, { width: 8 }, { width: 14 }, { width: 18 }, { width: 13 }, { width: 12 }], rows });
+    out.push({ name: 'Forecast', columns: [{ width: 18 }, { width: 11 }, { width: 14 }, { width: 16 }, { width: 8 }, { width: 14 }, { width: 28 }, { width: 13 }, { width: 12 }], rows });
+  }
+
+  if (sheets.includes('bal')) {
+    const rows: Cell[][] = [
+      [
+        H('Month'),
+        H('Member'),
+        H('Share'),
+        H('Balance carried in'),
+        H('Transfer asked'),
+        H('Transfer recorded'),
+        H('Transfer counted'),
+        H('Paid for the household'),
+        H('Paid for / by the other'),
+        H('Household spending'),
+        H('Their share'),
+        H('Balance'),
+        H('Balance at closing')
+      ]
+    ];
+    for (const m of months) {
+      const list = memberBalances(db, m);
+      const spent = monthStats(db, m).total;
+      const closing = closings(monthDoc(db, m)).at(-1);
+      for (const b of list) {
+        const got = received(db, m, b.member.id);
+        const then = closing?.balances[b.member.id];
+        rows.push([
+          monthName(m),
+          b.member.name,
+          { v: b.pct / 100, s: 'percent' },
+          eur(b.carryIn),
+          eur(b.expected),
+          got == null ? 'Not ticked' : eur(got),
+          eur(b.transferred),
+          eur(b.advances),
+          eur(b.between),
+          eur(spent),
+          eur(-b.due),
+          { v: b.balance / 100, s: 'moneyBold' },
+          then ? eur(then.balance) : null
+        ]);
+      }
+    }
+    out.push({ name: 'Balances', columns: [{ width: 18 }, { width: 16 }, { width: 8 }, { width: 18 }, { width: 14 }, { width: 17 }, { width: 16 }, { width: 21 }, { width: 21 }, { width: 18 }, { width: 12 }, { width: 12 }, { width: 18 }], rows });
+  }
+
+  if (sheets.includes('hist')) {
+    const rows: Cell[][] = [[H('Month'), H('Confirmed on'), H('By'), H('Plan total'), H('Member'), H('Share'), H('Share of total'), H('Balance carried in'), H('Asked'), H('Current')]];
+    for (const m of months) {
+      const rec = forecastRec(db, m);
+      const list = confirmations(rec);
+      list.forEach((c, i) => {
+        const current = !!rec?.data.confirmedAt && i === list.length - 1;
+        for (const [id, sh] of Object.entries(c.shares)) {
+          rows.push([
+            monthName(m),
+            { v: new Date(c.at), s: 'dateTime' },
+            ms.get(c.by)?.name ?? '',
+            eur(c.total),
+            ms.get(id)?.name ?? 'Former member',
+            { v: sh.pct / 100, s: 'percent' },
+            eur(sh.gross),
+            eur(sh.carry),
+            eur(sh.transfer),
+            current ? 'Yes' : ''
+          ]);
+        }
+      });
+    }
+    out.push({ name: 'Plan history', columns: [{ width: 18 }, { width: 17 }, { width: 14 }, { width: 12 }, { width: 16 }, { width: 8 }, { width: 14 }, { width: 18 }, { width: 12 }, { width: 9 }], rows });
   }
 
   if (sheets.includes('adv')) {

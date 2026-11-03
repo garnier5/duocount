@@ -2,8 +2,8 @@ import { useState } from 'react';
 import type { Db } from '../data/store';
 import { setReceived } from '../domain/actions';
 import { forecastView, type ShareView } from '../domain/calc';
-import { received } from '../domain/select';
-import { monthShort, type MonthKey } from '../lib/dates';
+import { member, received, receivedRec } from '../domain/select';
+import { dateTime, monthShort, type MonthKey } from '../lib/dates';
 import { money, parseAmount, plainAmount } from '../lib/money';
 import { Icon } from '../ui/icons';
 import { Alert, Avatar } from '../ui/kit';
@@ -47,6 +47,11 @@ export function TransfersCard({ db, month, title }: { db: Db; month: MonthKey; t
                 <span className="cap" style={{ display: 'block', color: tone }}>
                   {line}
                 </span>
+                {(receivedRec(db, month, s.member.id)?.data.history ?? []).map((h) => (
+                  <span key={h.at} className="cap" style={{ display: 'block' }}>
+                    Recorded before: {money(h.amount)} · {dateTime(h.at)}, {member(db, h.by)?.name ?? 'someone'}
+                  </span>
+                ))}
               </button>
               {got == null ? (
                 <button className="chip tint" type="button" style={{ minHeight: 40 }} onClick={() => setReceived(month, s.member.id, s.transfer)}>

@@ -5,6 +5,7 @@ import { axisTop, breakdown, chartMonths, monthPoint } from '../src/domain/chart
 import { DEFAULT_LOCAL, type Db } from '../src/data/store';
 import { canEnterExpenses, forecastView, startMonthChoices, memberBalances, monthInfo, monthStats } from '../src/domain/calc';
 import { createRec } from '../src/domain/records';
+import { forecastRec } from '../src/domain/select';
 import type { Category, Expense, Forecast, Household, Member, MonthDoc, Rec, Received } from '../src/domain/types';
 
 /**
@@ -180,6 +181,19 @@ describe('excel export', () => {
     ]);
     expect(strFromU8(files['xl/workbook.xml'])).toContain('name="Plan by category"');
   });
+  it('lists every step of each balance, the same as on screen', () => {
+    const db = scenario();
+    const files = unzipSync(buildWorkbook(db, ['2026-10'], ['bal', 'hist']));
+    const cells = (n: number) => [...strFromU8(files['xl/worksheets/sheet' + n + '.xml']).matchAll(/<t[^>]*>([^<]*)<\/t>|<v>([^<]*)<\/v>/g)].map((x) => x[1] ?? x[2]);
+    const bal = cells(1);
+    expect(bal.slice(0, 13)).toEqual(['Month', 'Member', 'Share', 'Balance carried in', 'Transfer asked', 'Transfer recorded', 'Transfer counted', 'Paid for the household', 'Paid for / by the other', 'Household spending', 'Their share', 'Balance', 'Balance at closing']);
+    const shown = memberBalances(db, '2026-10');
+    expect(bal[13 + 1]).toBe('Camille');
+    expect(Number(bal[13 + 11])).toBe(shown[0].balance / 100);
+    // Plans confirmed before the history existed still show their confirmation.
+    expect(cells(2)).toContain('Yes');
+    expect(strFromU8(files['xl/workbook.xml'])).toContain('name="Plan history"');
+  });
 });
 
 describe('charts', () => {
@@ -227,6 +241,32 @@ describe('first month', () => {
       expect(choices).toHaveLength(12);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe('how spending was entered', () => {
+  it('keeps category totals, one by one from the joint account and members apart', () => {
+    const db = scenario((add) =>
+      add<Expense>('expense', 't1', { month: '2026-10', label: 'Groceries, total for October', amount: 30000, categoryId: 'groceries', payer: 'joint', advance: false, kind: 'total' })
+    );
+    const s = monthStats(db, '2026-10');
+    expect([s.totals, s.singlesJoint, s.singlesAdvance]).toEqual([30000, 90000, 5000]);
+    expect(s.totals + s.singlesJoint + s.singlesAdvance).toBe(s.total);
+    const g = s.byCat.get('groceries')!;
+    expect([g.totals, g.singlesJoint, g.singlesAdvance, g.spent]).toEqual([30000, 40000, 5000, 75000]);
+  });
+});
+
+describe('balance compared with the plan', () => {
+  it('share of the plan − share of the spending + the rest gives the same balance', () => {
+    // Camille sent €50 more than asked, Julien paid €50 for the household, Camille paid €30 for Julien.
+    const db = scenario();
+    const shares = forecastRec(db, '2026-10')!.data.shares!;
+    for (const b of memberBalances(db, '2026-10')) {
+      const sh = shares[b.member.id];
+      const parts = sh.gross - b.due + (b.transferred - sh.transfer) + b.advances + b.between + (b.carryIn - sh.carry);
+      expect(parts).toBe(b.balance);
     }
   });
 });
